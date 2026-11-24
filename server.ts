@@ -3,12 +3,21 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = Number(process.env.PORT || 3000);
+function resolvePort(): number {
+  const portIdx = process.argv.indexOf('--port');
+  if (portIdx !== -1 && process.argv[portIdx + 1]) {
+    const parsed = Number(process.argv[portIdx + 1]);
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return Number(process.env.PORT || process.env.DEFAULT_APP_PORT || 3000);
+}
+
+const PORT = resolvePort();
 const IS_PROD = process.env.NODE_ENV === 'production';
 
 interface VerifyKtmBody {
@@ -105,7 +114,7 @@ Analyze any image uploaded by the user in the Upload Student ID (KTM / Kartu Pel
 
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
+        model: 'gemini-3.1-flash-lite',
         contents: {
           parts: [
             {
@@ -118,6 +127,7 @@ Analyze any image uploaded by the user in the Upload Student ID (KTM / Kartu Pel
           ],
         },
         config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
@@ -165,8 +175,12 @@ Analyze any image uploaded by the user in the Upload Student ID (KTM / Kartu Pel
         },
       });
 
-      const rawText = (response.text ?? '').trim();
-      const parsed = JSON.parse(rawText) as GeminiKtmAnalysis;
+      const rawText = (response.text ?? '')
+        .trim()
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+      const parsed = JSON.parse(rawText || '{}') as GeminiKtmAnalysis;
 
       const normalizedType = /pelajar|siswa|school/i.test(parsed.cardType || '')
         ? 'Kartu Pelajar'

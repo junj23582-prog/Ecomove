@@ -42,6 +42,17 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+function inferImageMimeType(file: File): string {
+  if (file.type && file.type.startsWith('image/')) return file.type;
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.heic')) return 'image/heic';
+  if (lower.endsWith('.heif')) return 'image/heif';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  return 'image/jpeg';
+}
+
 export async function normalizeImageToJpeg(
   source: File | string
 ): Promise<{ dataUrl: string; base64: string; mimeType: string }> {
@@ -51,7 +62,7 @@ export async function normalizeImageToJpeg(
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      const maxDim = 1280;
+      const maxDim = 860;
       const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
       const width = Math.max(1, Math.round((img.width || 640) * scale));
       const height = Math.max(1, Math.round((img.height || 400) * scale));
@@ -68,7 +79,12 @@ export async function normalizeImageToJpeg(
       ctx.fillRect(0, 0, width, height);
       ctx.drawImage(img, 0, 0, width, height);
 
-      const jpegUrl = canvas.toDataURL('image/jpeg', 0.9);
+      let quality = 0.8;
+      let jpegUrl = canvas.toDataURL('image/jpeg', quality);
+      while (jpegUrl.length > 750_000 && quality > 0.45) {
+        quality -= 0.12;
+        jpegUrl = canvas.toDataURL('image/jpeg', quality);
+      }
       const base64 = jpegUrl.replace(/^data:image\/jpeg;base64,/, '');
       resolve({
         dataUrl: jpegUrl,
@@ -77,16 +93,21 @@ export async function normalizeImageToJpeg(
       });
     };
     img.onerror = () => {
-      const match = /^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/.exec(rawDataUrl);
+      const match = /^data:([^;]+);base64,(.+)$/.exec(rawDataUrl);
       if (match) {
+        const inferredMime = match[1].startsWith('image/')
+          ? match[1]
+          : typeof source !== 'string'
+          ? inferImageMimeType(source)
+          : 'image/jpeg';
         resolve({
           dataUrl: rawDataUrl,
           base64: match[2],
-          mimeType: match[1],
+          mimeType: inferredMime,
         });
         return;
       }
-      reject(new Error('Invalid or unsupported image format.'));
+      reject(new Error('Format gambar tidak didukung oleh browser.'));
     };
     img.src = rawDataUrl;
   });
@@ -161,7 +182,7 @@ export function createSamplePolteqKtmDataUrl(studentName?: string): string {
   ctx.font = 'bold 15px sans-serif';
   ctx.fillText('STATUS: MAHASISWA AKTIF · PONTIANAK KALIMANTAN BARAT', 46, 355);
 
-  return canvas.toDataURL('image/jpeg', 0.92);
+  return canvas.toDataURL('image/jpeg', 0.85);
 }
 
 interface VerifyApiResponse {
@@ -182,24 +203,52 @@ export async function verifyStudentCardImage(params: {
   const { source, lang } = params;
   const normalized = await normalizeImageToJpeg(source);
 
-  const res = await fetch('/api/verify-ktm', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      imageBase64: normalized.base64,
-      mimeType: normalized.mimeType,
-      lang,
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 35000);
 
-  const payload = (await res.json().catch(() => ({}))) as VerifyApiResponse;
+  let res: Response;
+  try {
+    res = await fetch('/api/verify-ktm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imageBase64: normalized.base64,
+        mimeType: normalized.mimeType,
+        lang,
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(
+        lang === 'id'
+          ? 'Waktu pemindaian foto habis. Silakan coba lagi.'
+          : 'Image scan timed out. Please try again.'
+      );
+    }
+    throw new Error(
+      lang === 'id'
+        ? 'Koneksi ke server pemindai gagal. Silakan coba lagi.'
+        : 'Failed to reach image scanner server. Please retry.'
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  const rawBody = await res.text();
+  let payload: VerifyApiResponse = {};
+  try {
+    payload = JSON.parse(rawBody) as VerifyApiResponse;
+  } catch {
+    payload = {};
+  }
 
   if (!res.ok) {
     throw new Error(
       payload.error ||
         (lang === 'id'
-          ? 'Gagal memverifikasi foto kartu mahasiswa/pelajar.'
-          : 'Failed to verify student ID photo.')
+          ? `Gagal memverifikasi foto kartu (kode ${res.status}). Silakan coba lagi.`
+          : `Failed to verify card photo (status ${res.status}). Please try again.`)
     );
   }
 
