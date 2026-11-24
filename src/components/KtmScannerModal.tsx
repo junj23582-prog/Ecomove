@@ -65,10 +65,18 @@ export function KtmScannerModal({
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } },
-        audio: false,
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -143,11 +151,15 @@ export function KtmScannerModal({
     void analyzeCardSource(sampleUrl, `KTM_Polteq_${Date.now()}.jpg`);
   };
 
-  const handleUploadFromScanner = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
+  const handleUploadFromScanner = async (e: ChangeEvent<HTMLInputElement>) => {
+    const input = e.currentTarget;
+    const file = input.files?.[0];
     if (!file) return;
-    void analyzeCardSource(file, file.name);
+    try {
+      await analyzeCardSource(file, file.name);
+    } finally {
+      input.value = '';
+    }
   };
 
   const handleCopySummary = () => {
@@ -352,27 +364,59 @@ export function KtmScannerModal({
       <div className="space-y-2 pb-2 shrink-0">
         {!scannedResult ? (
           <>
-            <button
-              type="button"
-              disabled={scanning}
-              onClick={handleCaptureCamera}
-              className="w-full min-h-[46px] rounded-2xl bg-[#10B981] hover:bg-[#059669] text-white text-xs font-bold flex items-center justify-center gap-2 shadow-md disabled:opacity-60 cursor-pointer"
-            >
-              <Camera className="w-4 h-4" />
-              <span>
-                {scanning
-                  ? lang === 'id'
-                    ? 'Memverifikasi Kartu...'
-                    : 'Verifying Card...'
-                  : cameraState === 'live'
-                  ? lang === 'id'
+            {cameraState === 'live' ? (
+              <button
+                type="button"
+                disabled={scanning}
+                onClick={handleCaptureCamera}
+                className="w-full min-h-[46px] rounded-2xl bg-[#10B981] hover:bg-[#059669] text-white text-xs font-bold flex items-center justify-center gap-2 shadow-md disabled:opacity-60 cursor-pointer"
+              >
+                <Camera className="w-4 h-4" />
+                <span>
+                  {scanning
+                    ? lang === 'id'
+                      ? 'Memverifikasi Kartu...'
+                      : 'Verifying Card...'
+                    : lang === 'id'
                     ? 'Ambil Foto & Deteksi KTM'
-                    : 'Capture & Detect Student ID'
-                  : lang === 'id'
-                  ? 'Contoh KTM (Politeknik Tonggak Equator)'
-                  : 'Sample KTM (Politeknik Tonggak Equator)'}
-              </span>
-            </button>
+                    : 'Capture & Detect Student ID'}
+                </span>
+              </button>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                <label className="min-h-[46px] px-2.5 rounded-2xl bg-[#10B981] hover:bg-[#059669] text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-md cursor-pointer text-center">
+                  <Camera className="w-4 h-4 shrink-0" />
+                  <span className="truncate">
+                    {scanning
+                      ? lang === 'id'
+                        ? 'Memverifikasi...'
+                        : 'Verifying...'
+                      : lang === 'id'
+                      ? 'Kamera HP / Foto'
+                      : 'Take Photo'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif"
+                    capture="environment"
+                    disabled={scanning}
+                    onChange={handleUploadFromScanner}
+                    className="sr-only"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={scanning}
+                  onClick={handleCaptureCamera}
+                  className="min-h-[46px] px-2.5 rounded-2xl bg-white/15 hover:bg-white/25 border border-white/20 text-white text-xs font-bold flex items-center justify-center gap-1.5 disabled:opacity-60 cursor-pointer text-center"
+                >
+                  <Sparkles className="w-4 h-4 text-[#34D399] shrink-0" />
+                  <span className="truncate">
+                    {lang === 'id' ? 'Contoh KTM Polteq' : 'Sample Polteq ID'}
+                  </span>
+                </button>
+              </div>
+            )}
 
             <label className="w-full min-h-[42px] rounded-2xl bg-white/10 hover:bg-white/15 border border-white/20 text-white text-xs font-bold flex items-center justify-center gap-2 cursor-pointer">
               <Upload className="w-4 h-4 text-[#34D399]" />
@@ -383,7 +427,7 @@ export function KtmScannerModal({
               </span>
               <input
                 type="file"
-                accept="image/*"
+                accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif"
                 disabled={scanning}
                 onChange={handleUploadFromScanner}
                 className="sr-only"

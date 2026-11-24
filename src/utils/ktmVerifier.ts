@@ -53,64 +53,113 @@ function inferImageMimeType(file: File): string {
   return 'image/jpeg';
 }
 
+function drawSourceToCompressedJpeg(
+  source: ImageBitmap | HTMLImageElement,
+  srcWidth: number,
+  srcHeight: number
+): { dataUrl: string; base64: string; mimeType: string } {
+  const maxDim = 860;
+  const scale = Math.min(1, maxDim / Math.max(srcWidth || 1, srcHeight || 1));
+  const width = Math.max(1, Math.round((srcWidth || 640) * scale));
+  const height = Math.max(1, Math.round((srcHeight || 400) * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Canvas context unavailable.');
+  }
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(source, 0, 0, width, height);
+
+  let quality = 0.8;
+  let jpegUrl = canvas.toDataURL('image/jpeg', quality);
+  while (jpegUrl.length > 700_000 && quality > 0.4) {
+    quality -= 0.12;
+    jpegUrl = canvas.toDataURL('image/jpeg', quality);
+  }
+  const base64 = jpegUrl.replace(/^data:image\/jpeg;base64,/, '');
+  return {
+    dataUrl: jpegUrl,
+    base64,
+    mimeType: 'image/jpeg',
+  };
+}
+
+function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Image element decode failed'));
+    img.src = src;
+  });
+}
+
 export async function normalizeImageToJpeg(
   source: File | string
 ): Promise<{ dataUrl: string; base64: string; mimeType: string }> {
+  if (typeof source !== 'string') {
+    // 1. Best path for Android/Desktop camera & gallery photos: createImageBitmap
+    if (typeof createImageBitmap === 'function') {
+      try {
+        const bitmap = await createImageBitmap(source);
+        try {
+          return drawSourceToCompressedJpeg(bitmap, bitmap.width, bitmap.height);
+        } finally {
+          bitmap.close();
+        }
+      } catch {
+        // fall through to ObjectURL
+      }
+    }
+
+    // 2. ObjectURL path (avoids massive base64 strings in mobile memory)
+    if (typeof URL.createObjectURL === 'function') {
+      const objectUrl = URL.createObjectURL(source);
+      try {
+        const img = await loadImageElement(objectUrl);
+        return drawSourceToCompressedJpeg(img, img.naturalWidth || img.width, img.naturalHeight || img.height);
+      } catch {
+        // fall through to FileReader
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    }
+  }
+
   const rawDataUrl =
     typeof source === 'string' ? source : await readFileAsDataUrl(source);
 
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      const maxDim = 860;
-      const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
-      const width = Math.max(1, Math.round((img.width || 640) * scale));
-      const height = Math.max(1, Math.round((img.height || 400) * scale));
-
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        reject(new Error('Canvas context unavailable.'));
-        return;
+  try {
+    const img = await loadImageElement(rawDataUrl);
+    return drawSourceToCompressedJpeg(
+      img,
+      img.naturalWidth || img.width,
+      img.naturalHeight || img.height
+    );
+  } catch {
+    const match = /^data:([^;]*);base64,(.+)$/.exec(rawDataUrl);
+    if (match) {
+      const inferredMime = match[1].startsWith('image/')
+        ? match[1]
+        : typeof source !== 'string'
+        ? inferImageMimeType(source)
+        : 'image/jpeg';
+      if (match[2].length > 1_100_000) {
+        throw new Error(
+          'Ukuran foto terlalu besar dan formatnya tidak dapat dikompresi browser. Gunakan foto JPG/PNG atau ambil ulang lewat kamera.'
+        );
       }
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(0, 0, width, height);
-      ctx.drawImage(img, 0, 0, width, height);
-
-      let quality = 0.8;
-      let jpegUrl = canvas.toDataURL('image/jpeg', quality);
-      while (jpegUrl.length > 750_000 && quality > 0.45) {
-        quality -= 0.12;
-        jpegUrl = canvas.toDataURL('image/jpeg', quality);
-      }
-      const base64 = jpegUrl.replace(/^data:image\/jpeg;base64,/, '');
-      resolve({
-        dataUrl: jpegUrl,
-        base64,
-        mimeType: 'image/jpeg',
-      });
-    };
-    img.onerror = () => {
-      const match = /^data:([^;]+);base64,(.+)$/.exec(rawDataUrl);
-      if (match) {
-        const inferredMime = match[1].startsWith('image/')
-          ? match[1]
-          : typeof source !== 'string'
-          ? inferImageMimeType(source)
-          : 'image/jpeg';
-        resolve({
-          dataUrl: rawDataUrl,
-          base64: match[2],
-          mimeType: inferredMime,
-        });
-        return;
-      }
-      reject(new Error('Format gambar tidak didukung oleh browser.'));
-    };
-    img.src = rawDataUrl;
-  });
+      return {
+        dataUrl: `data:${inferredMime};base64,${match[2]}`,
+        base64: match[2],
+        mimeType: inferredMime,
+      };
+    }
+    throw new Error('Format gambar tidak didukung oleh browser.');
+  }
 }
 
 export function createSamplePolteqKtmDataUrl(studentName?: string): string {

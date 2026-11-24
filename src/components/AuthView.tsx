@@ -132,10 +132,14 @@ export function AuthView({ lang, onChangeLang, onAuthenticated }: AuthViewProps)
   };
 
   const handleKtmUpload = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
+    const input = e.currentTarget;
+    const file = input.files?.[0];
     if (!file) return;
-    await runKtmVerification(file, file.name);
+    try {
+      await runKtmVerification(file, file.name);
+    } finally {
+      input.value = '';
+    }
   };
 
   const handleSampleKtm = async () => {
@@ -708,7 +712,7 @@ export function AuthView({ lang, onChangeLang, onAuthenticated }: AuthViewProps)
                             </span>
                             <input
                               type="file"
-                              accept="image/*"
+                              accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif"
                               onChange={handleKtmUpload}
                               className="sr-only"
                             />
