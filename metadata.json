@@ -1,0 +1,6 @@
+{
+  "name": "EcoMove",
+  "description": "Layanan penjemputan sampah on-demand dan langganan bulanan dengan pelacakan langsung, EcoPoints, dan portal mitra pengepul.",
+  "requestFramePermissions": ["geolocation", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
