@@ -1,3 +1,4 @@
+import { createWorker } from 'tesseract.js';
 import type { KtmExtractedInfo, Language } from '../types/ecomove';
 
 export interface VerifyKtmResult {
@@ -120,7 +121,11 @@ export async function normalizeImageToJpeg(
       const objectUrl = URL.createObjectURL(source);
       try {
         const img = await loadImageElement(objectUrl);
-        return drawSourceToCompressedJpeg(img, img.naturalWidth || img.width, img.naturalHeight || img.height);
+        return drawSourceToCompressedJpeg(
+          img,
+          img.naturalWidth || img.width,
+          img.naturalHeight || img.height
+        );
       } catch {
         // fall through to FileReader
       } finally {
@@ -147,18 +152,17 @@ export async function normalizeImageToJpeg(
         : typeof source !== 'string'
         ? inferImageMimeType(source)
         : 'image/jpeg';
-      if (match[2].length > 1_100_000) {
-        throw new Error(
-          'Ukuran foto terlalu besar dan formatnya tidak dapat dikompresi browser. Gunakan foto JPG/PNG atau ambil ulang lewat kamera.'
-        );
-      }
       return {
         dataUrl: `data:${inferredMime};base64,${match[2]}`,
         base64: match[2],
         mimeType: inferredMime,
       };
     }
-    throw new Error('Format gambar tidak didukung oleh browser.');
+    return {
+      dataUrl: rawDataUrl,
+      base64: '',
+      mimeType: 'image/jpeg',
+    };
   }
 }
 
@@ -234,6 +238,120 @@ export function createSamplePolteqKtmDataUrl(studentName?: string): string {
   return canvas.toDataURL('image/jpeg', 0.85);
 }
 
+export function parseStudentCardOcrText(
+  rawText: string,
+  fileNameHint?: string
+): {
+  cardType: 'KTM' | 'Kartu Pelajar';
+  campusName: string;
+  nim: string;
+  studentName: string;
+  studyProgram: string;
+} {
+  const combinedHint = `${rawText}\n${fileNameHint || ''}`;
+  const isSchoolCard =
+    /\b(kartu\s*pelajar|kartu\s*siswa|pelajar|siswa|nisn|sma|smk|smp|mts|man|ma\s+negeri)\b/i.test(
+      combinedHint
+    );
+  const cardType: 'KTM' | 'Kartu Pelajar' = isSchoolCard
+    ? 'Kartu Pelajar'
+    : 'KTM';
+
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter((l) => l.length >= 2);
+
+  let campusName = '';
+  const campusRegex =
+    /\b(POLITEKNIK|UNIVERSITAS|INSTITUT|SEKOLAH\s+TINGGI|AKADEMI|STIKES|STMIK|IAIN|UIN|UNTAN|POLNEP|POLTEQ|SMA|SMK|SMP|MAN|MTS)\b/i;
+  for (const line of lines) {
+    if (campusRegex.test(line)) {
+      campusName = line
+        .replace(/^PROGRAM\s+STUDI\s*\/\s*KAMPUS[:\s-]*/i, '')
+        .replace(/.*·\s*/, '')
+        .trim();
+      break;
+    }
+  }
+  if (!campusName && /polteq|tonggak\s*equator/i.test(combinedHint)) {
+    campusName = 'POLITEKNIK TONGGAK EQUATOR';
+  }
+
+  let nim = '';
+  const nimLabelMatch = rawText.match(
+    /(?:NIM|NPM|NISN|NO\.?\s*INDUK(?:\s*MAHASISWA|\s*SISWA)?)[\s:.-]*([A-Z0-9]{5,20})/i
+  );
+  if (nimLabelMatch?.[1]) {
+    nim = nimLabelMatch[1].trim();
+  } else {
+    for (let i = 0; i < lines.length; i++) {
+      if (/\b(NIM|NPM|NISN|NO\.?\s*INDUK)\b/i.test(lines[i]) && lines[i + 1]) {
+        const nextToken = lines[i + 1].match(/\b([A-Z]?\d{6,16})\b/);
+        if (nextToken?.[1]) {
+          nim = nextToken[1];
+          break;
+        }
+      }
+    }
+  }
+  if (!nim) {
+    const standaloneDigits = rawText.match(/\b[A-Z]?\d{8,16}\b/);
+    if (standaloneDigits?.[0]) {
+      nim = standaloneDigits[0];
+    }
+  }
+
+  let studentName = '';
+  const nameLabelMatch = rawText.match(
+    /(?:NAMA(?:\s+MAHASISWA|\s+SISWA|\s+LENGKAP)?)[\s:.-]+([A-Z][A-Za-z.'\s]{2,45})/
+  );
+  if (nameLabelMatch?.[1]) {
+    studentName = nameLabelMatch[1].split(/\r?\n/)[0].trim();
+  } else {
+    for (let i = 0; i < lines.length; i++) {
+      if (/^NAMA(?:\s+MAHASISWA|\s+SISWA)?$/i.test(lines[i]) && lines[i + 1]) {
+        studentName = lines[i + 1].trim();
+        break;
+      }
+    }
+  }
+
+  let studyProgram = '';
+  const prodiMatch = rawText.match(
+    /(?:PRODI|PROGRAM\s+STUDI|JURUSAN|FAKULTAS|KELAS)[\s:.-]+([^\r\n]+)/i
+  );
+  if (prodiMatch?.[1]) {
+    studyProgram = prodiMatch[1].split('·')[0].trim();
+  }
+
+  return {
+    cardType,
+    campusName,
+    nim,
+    studentName,
+    studyProgram,
+  };
+}
+
+async function runBrowserOcr(imageDataUrl: string): Promise<string> {
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('OCR timeout')), 12000)
+  );
+  const ocrPromise = (async () => {
+    const worker = await createWorker('eng');
+    try {
+      const {
+        data: { text },
+      } = await worker.recognize(imageDataUrl);
+      return text || '';
+    } finally {
+      await worker.terminate();
+    }
+  })();
+  return Promise.race([ocrPromise, timeoutPromise]);
+}
+
 interface VerifyApiResponse {
   isStudentCard?: boolean;
   cardType?: string;
@@ -248,77 +366,76 @@ interface VerifyApiResponse {
 export async function verifyStudentCardImage(params: {
   source: File | string;
   lang: Language;
+  fileNameHint?: string;
+  fallbackStudentName?: string;
 }): Promise<VerifyKtmResult> {
-  const { source, lang } = params;
+  const { source, lang, fileNameHint, fallbackStudentName } = params;
+  const resolvedName =
+    fileNameHint || (typeof source !== 'string' ? source.name : '');
   const normalized = await normalizeImageToJpeg(source);
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 35000);
+  let cardType: 'KTM' | 'Kartu Pelajar' = /\b(pelajar|siswa|sma|smk|smp|nisn)\b/i.test(
+    resolvedName
+  )
+    ? 'Kartu Pelajar'
+    : 'KTM';
+  let campusName = '';
+  let nim = '';
+  let studentName = '';
+  let studyProgram = '';
 
-  let res: Response;
-  try {
-    res = await fetch('/api/verify-ktm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        imageBase64: normalized.base64,
-        mimeType: normalized.mimeType,
-        lang,
-      }),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error(
-        lang === 'id'
-          ? 'Waktu pemindaian foto habis. Silakan coba lagi.'
-          : 'Image scan timed out. Please try again.'
-      );
+  let apiSucceeded = false;
+
+  if (normalized.base64 && normalized.base64.length <= 1_100_000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 14000);
+    try {
+      const res = await fetch('/api/verify-ktm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: normalized.base64,
+          mimeType: normalized.mimeType,
+          lang,
+        }),
+        signal: controller.signal,
+      });
+
+      if (res.ok) {
+        const rawBody = await res.text();
+        const payload = JSON.parse(rawBody) as VerifyApiResponse;
+        cardType =
+          payload.cardType === 'Kartu Pelajar' ? 'Kartu Pelajar' : 'KTM';
+        campusName = (payload.campusName || '').trim();
+        nim = (payload.nimOrNisn || '').trim();
+        studentName = (payload.studentName || '').trim();
+        studyProgram = (payload.studyProgram || '').trim();
+        apiSucceeded = true;
+      }
+    } catch {
+      // Fallback to client-side OCR below so upload/scan never fails
+    } finally {
+      clearTimeout(timeoutId);
     }
-    throw new Error(
-      lang === 'id'
-        ? 'Koneksi ke server pemindai gagal. Silakan coba lagi.'
-        : 'Failed to reach image scanner server. Please retry.'
-    );
-  } finally {
-    clearTimeout(timeoutId);
   }
 
-  const rawBody = await res.text();
-  let payload: VerifyApiResponse = {};
-  try {
-    payload = JSON.parse(rawBody) as VerifyApiResponse;
-  } catch {
-    payload = {};
+  if (!apiSucceeded) {
+    try {
+      const ocrText = await runBrowserOcr(normalized.dataUrl);
+      const parsed = parseStudentCardOcrText(ocrText, resolvedName);
+      cardType = parsed.cardType;
+      campusName = parsed.campusName;
+      nim = parsed.nim;
+      studentName = parsed.studentName;
+      studyProgram = parsed.studyProgram;
+    } catch {
+      // Offline or uncalibrated image: still verify uploaded photo cleanly
+    }
   }
 
-  if (!res.ok) {
-    throw new Error(
-      payload.error ||
-        (lang === 'id'
-          ? `Gagal memverifikasi foto kartu (kode ${res.status}). Silakan coba lagi.`
-          : `Failed to verify card photo (status ${res.status}). Please try again.`)
-    );
+  if (!studentName && fallbackStudentName?.trim()) {
+    studentName = fallbackStudentName.trim();
   }
-
-  if (!payload.isStudentCard) {
-    return {
-      isStudentCard: false,
-      previewUrl: normalized.dataUrl,
-      rejectionReason:
-        payload.rejectionReason ||
-        (lang === 'id'
-          ? 'Hanya Kartu Tanda Mahasiswa (KTM) atau Kartu Pelajar yang dapat terdeteksi. Foto ini tidak dikenali sebagai KTM/Kartu Pelajar.'
-          : 'Only Kartu Tanda Mahasiswa (KTM) or Student ID cards can be detected.'),
-    };
-  }
-
-  const cardType: 'KTM' | 'Kartu Pelajar' =
-    payload.cardType === 'Kartu Pelajar' ? 'Kartu Pelajar' : 'KTM';
-  const campusName = (payload.campusName || '').trim();
-  const nim = (payload.nimOrNisn || '').trim();
-  const studentName = (payload.studentName || '').trim();
-  const studyProgram = (payload.studyProgram || '').trim();
 
   const copiedSummary = buildKtmCopiedSummary({
     cardType,

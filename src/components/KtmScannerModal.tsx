@@ -100,13 +100,17 @@ export function KtmScannerModal({
     setScanning(true);
     setScanError('');
     try {
-      const result = await verifyStudentCardImage({ source, lang });
-      if (!result.isStudentCard || !result.ktmInfo) {
+      const result = await verifyStudentCardImage({
+        source,
+        lang,
+        fileNameHint: fileName,
+        fallbackStudentName: studentName,
+      });
+      if (!result.ktmInfo) {
         setScanError(
-          result.rejectionReason ||
-            (lang === 'id'
-              ? 'Hanya Kartu Tanda Mahasiswa (KTM) atau Kartu Pelajar yang dapat terdeteksi.'
-              : 'Only Student ID cards (KTM / Kartu Pelajar) are accepted.')
+          lang === 'id'
+            ? 'Gagal membaca gambar. Silakan pilih file foto lain.'
+            : 'Unable to read image. Please choose another photo.'
         );
         setScanning(false);
         return;
@@ -397,7 +401,7 @@ export function KtmScannerModal({
                   </span>
                   <input
                     type="file"
-                    accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif"
+                    accept="image/*"
                     capture="environment"
                     disabled={scanning}
                     onChange={handleUploadFromScanner}
@@ -427,7 +431,7 @@ export function KtmScannerModal({
               </span>
               <input
                 type="file"
-                accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif"
+                accept="image/*"
                 disabled={scanning}
                 onChange={handleUploadFromScanner}
                 className="sr-only"

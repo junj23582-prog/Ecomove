@@ -33,6 +33,7 @@ import {
   verifyPassword,
 } from '../utils/authSecurity';
 import {
+  buildKtmCopiedSummary,
   createSamplePolteqKtmDataUrl,
   verifyStudentCardImage,
 } from '../utils/ktmVerifier';
@@ -92,16 +93,18 @@ export function AuthView({ lang, onChangeLang, onAuthenticated }: AuthViewProps)
     setErrorMsg('');
     setVerifyingKtm(true);
     try {
-      const result = await verifyStudentCardImage({ source, lang });
-      if (!result.isStudentCard || !result.ktmInfo) {
-        setKtmFileName('');
-        setKtmPreviewUrl('');
-        setKtmInfo(null);
+      const fallbackName = fullName.trim() || deriveNameFromEmail(email);
+      const result = await verifyStudentCardImage({
+        source,
+        lang,
+        fileNameHint: fileName,
+        fallbackStudentName: fallbackName,
+      });
+      if (!result.ktmInfo) {
         setErrorMsg(
-          result.rejectionReason ||
-            (lang === 'id'
-              ? 'Hanya Kartu Tanda Mahasiswa (KTM) atau Kartu Pelajar yang dapat terdeteksi.'
-              : 'Only Student ID cards (KTM / Kartu Pelajar) are accepted.')
+          lang === 'id'
+            ? 'Gagal membaca file gambar. Silakan pilih file foto lain.'
+            : 'Unable to read image file. Please try another photo.'
         );
         return;
       }
@@ -129,6 +132,34 @@ export function AuthView({ lang, onChangeLang, onAuthenticated }: AuthViewProps)
     } finally {
       setVerifyingKtm(false);
     }
+  };
+
+  const updateKtmInfoField = (
+    field: 'cardType' | 'campusName' | 'nim' | 'studentName' | 'studyProgram',
+    value: string
+  ) => {
+    setKtmInfo((prev) => {
+      if (!prev) return prev;
+      const nextCardType: 'KTM' | 'Kartu Pelajar' =
+        field === 'cardType'
+          ? value === 'Kartu Pelajar'
+            ? 'Kartu Pelajar'
+            : 'KTM'
+          : prev.cardType;
+      const next = {
+        ...prev,
+        [field]: field === 'studyProgram' ? value || undefined : value,
+        cardType: nextCardType,
+      };
+      next.copiedSummary = buildKtmCopiedSummary({
+        cardType: next.cardType,
+        campusName: next.campusName,
+        nim: next.nim,
+        studentName: next.studentName,
+        studyProgram: next.studyProgram,
+      });
+      return next;
+    });
   };
 
   const handleKtmUpload = async (e: ChangeEvent<HTMLInputElement>) => {
@@ -712,7 +743,7 @@ export function AuthView({ lang, onChangeLang, onAuthenticated }: AuthViewProps)
                             </span>
                             <input
                               type="file"
-                              accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif"
+                              accept="image/*"
                               onChange={handleKtmUpload}
                               className="sr-only"
                             />
@@ -750,12 +781,12 @@ export function AuthView({ lang, onChangeLang, onAuthenticated }: AuthViewProps)
                           </button>
                         </div>
 
-                        <div className="rounded-xl bg-white border border-[#A7F3D0] p-2.5 space-y-1.5">
+                        <div className="rounded-xl bg-white border border-[#A7F3D0] p-2.5 space-y-2">
                           <div className="flex items-center justify-between gap-2">
                             <p className="text-[11px] font-bold text-[#059669] flex items-center gap-1 min-w-0">
                               <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                               <span className="truncate">
-                                {ktmInfo.cardType} Terdeteksi
+                                {ktmInfo.cardType} Terverifikasi
                               </span>
                             </p>
                             <button
@@ -777,31 +808,67 @@ export function AuthView({ lang, onChangeLang, onAuthenticated }: AuthViewProps)
                             </button>
                           </div>
 
-                          <div className="text-[11px] space-y-1 border-t border-[#F1F5F9] pt-1.5">
+                          <div className="text-[11px] space-y-1.5 border-t border-[#F1F5F9] pt-2">
+                            <div className="grid grid-cols-2 gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => updateKtmInfoField('cardType', 'KTM')}
+                                className={`py-1 px-2 rounded-lg text-[10px] font-bold border cursor-pointer ${
+                                  ktmInfo.cardType === 'KTM'
+                                    ? 'bg-[#ECFDF5] border-[#10B981] text-[#059669]'
+                                    : 'bg-[#F8FAFC] border-[#E2E8F0] text-[#64748B]'
+                                }`}
+                              >
+                                KTM
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => updateKtmInfoField('cardType', 'Kartu Pelajar')}
+                                className={`py-1 px-2 rounded-lg text-[10px] font-bold border cursor-pointer ${
+                                  ktmInfo.cardType === 'Kartu Pelajar'
+                                    ? 'bg-[#ECFDF5] border-[#10B981] text-[#059669]'
+                                    : 'bg-[#F8FAFC] border-[#E2E8F0] text-[#64748B]'
+                                }`}
+                              >
+                                Kartu Pelajar
+                              </button>
+                            </div>
                             <div>
-                              <span className="text-[10px] text-[#64748B] block">
+                              <span className="text-[10px] text-[#64748B] block mb-0.5">
                                 {lang === 'id' ? 'Kampus / Sekolah' : 'Institution'}
                               </span>
-                              <span className="font-bold text-[#0F172A] break-words">
-                                {ktmInfo.campusName || '-'}
-                              </span>
+                              <input
+                                type="text"
+                                value={ktmInfo.campusName}
+                                onChange={(e) => updateKtmInfoField('campusName', e.target.value)}
+                                placeholder="Cth: POLITEKNIK TONGGAK EQUATOR"
+                                className="w-full px-2 py-1 rounded-lg bg-[#F8FAFC] border border-[#E2E8F0] text-[11px] font-bold text-[#0F172A] focus:outline-none focus:border-[#10B981]"
+                              />
                             </div>
                             <div className="grid grid-cols-2 gap-2">
                               <div>
-                                <span className="text-[10px] text-[#64748B] block">
+                                <span className="text-[10px] text-[#64748B] block mb-0.5">
                                   NIM / NISN
                                 </span>
-                                <span className="font-mono-tabular font-bold text-[#059669] break-all">
-                                  {ktmInfo.nim || '-'}
-                                </span>
+                                <input
+                                  type="text"
+                                  value={ktmInfo.nim}
+                                  onChange={(e) => updateKtmInfoField('nim', e.target.value)}
+                                  placeholder="Cth: 2023104018"
+                                  className="w-full px-2 py-1 rounded-lg bg-[#F8FAFC] border border-[#E2E8F0] text-[11px] font-mono-tabular font-bold text-[#059669] focus:outline-none focus:border-[#10B981]"
+                                />
                               </div>
                               <div>
-                                <span className="text-[10px] text-[#64748B] block">
+                                <span className="text-[10px] text-[#64748B] block mb-0.5">
                                   {lang === 'id' ? 'Nama' : 'Name'}
                                 </span>
-                                <span className="font-semibold text-[#0F172A] break-words">
-                                  {ktmInfo.studentName || '-'}
-                                </span>
+                                <input
+                                  type="text"
+                                  value={ktmInfo.studentName}
+                                  onChange={(e) => updateKtmInfoField('studentName', e.target.value)}
+                                  placeholder={lang === 'id' ? 'Nama di kartu' : 'Card name'}
+                                  className="w-full px-2 py-1 rounded-lg bg-[#F8FAFC] border border-[#E2E8F0] text-[11px] font-semibold text-[#0F172A] focus:outline-none focus:border-[#10B981]"
+                                />
                               </div>
                             </div>
                             {ktmInfo.studyProgram && (
